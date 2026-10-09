@@ -8,6 +8,27 @@
 <link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=Barlow+Condensed:wght@500;700&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/topojson-client@3.1.0/dist/topojson-client.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script>
+/* =====================================================================
+   CONFIGURACIÓN DE FIREBASE (para jugar con código fuera de claude.ai)
+   Pega aquí el objeto firebaseConfig de tu proyecto de Firebase.
+   Si lo dejas en null, la página solo ofrece el modo Practicar
+   (o usa la base de datos de Claude si se abre dentro de claude.ai).
+   ===================================================================== */
+const FIREBASE_CONFIG = null;
+/* Ejemplo:
+const FIREBASE_CONFIG = {
+  apiKey: "AIza...",
+  authDomain: "mi-proyecto.firebaseapp.com",
+  projectId: "mi-proyecto",
+  storageBucket: "mi-proyecto.appspot.com",
+  messagingSenderId: "123456789",
+  appId: "1:123456789:web:abc123"
+};
+*/
+</script>
 <style>
 :root{
   --board:#1B2638; --board-2:#253349; --flap:#F2C14E; --flap-ink:#1B2638;
@@ -192,7 +213,7 @@ input.code{font-family:var(--cond);font-size:34px;letter-spacing:.2em;text-trans
       <button class="role" id="goPractice"><strong>Practicar</strong><span>Juega solo, sin código y sin marcador compartido.</span></button>
     </div>
     <div id="resumeBox" class="msg hidden"></div>
-    <div id="dbNote" class="msg hidden">Las partidas con código no están disponibles en esta vista. Puedes usar el modo Practicar.</div>
+    <div id="dbNote" class="msg">Conectando con las partidas compartidas…</div>
   </section>
 
   <!-- ELEGIR JUEGO -->
@@ -425,19 +446,38 @@ document.querySelectorAll("[data-home]").forEach(b=>b.onclick=goHome);
 
 /* --- capacidades --- */
 (async()=>{
-  try{S.db=window.claude?await claude.use("db"):null}catch(e){S.db=null}
-  try{S.user=window.claude?await claude.use("user"):null}catch(e){S.user=null}
-  if(S.user){try{S.uid=await S.user.id()}catch(e){}try{S.canWrite=S.user.can?S.user.can("data.write"):null}catch(e){}}
-  dbReady();
+  S.hasFirebase=false;
+  if(typeof FIREBASE_CONFIG!=="undefined"&&FIREBASE_CONFIG&&window.firebase){
+    try{
+      if(!firebase.apps.length)firebase.initializeApp(FIREBASE_CONFIG);
+      S.db=firebase.firestore();S.hasFirebase=true;
+      try{S.uid=localStorage.getItem("geo-equipo-uid")||null;if(!S.uid){S.uid="u"+Math.random().toString(36).slice(2,12);localStorage.setItem("geo-equipo-uid",S.uid)}}catch(e){}
+    }catch(e){S.db=null}
+  }
+  const hasClaude=!S.hasFirebase&&!!(window.claude&&window.claude.use);
+  S.hasClaude=hasClaude;
+  if(hasClaude){
+    try{S.db=await claude.use("db")}catch(e){S.db=null}
+    try{S.user=await claude.use("user")}catch(e){S.user=null}
+    if(S.user){try{S.uid=await S.user.id()}catch(e){}try{S.canWrite=S.user.can?await S.user.can("data.write"):null}catch(e){S.canWrite=null}}
+  }
+  S.ready=true;dbReady();
 })();
+function dbMsg(){
+  if(!S.ready)return"Todavía estamos conectando con las partidas compartidas. Espera unos segundos e inténtalo de nuevo.";
+  if(!S.db){
+    if(typeof FIREBASE_CONFIG!=="undefined"&&FIREBASE_CONFIG)return"No se pudo conectar con Firebase. Revisa tu conexión a internet y que la configuración de Firebase esté bien copiada. Mientras, puedes usar el modo Practicar.";
+    return S.hasClaude?"Las partidas con código no están disponibles en esta vista. Abre la página desde claude.ai con tu sesión iniciada. Mientras, puedes usar el modo Practicar.":"Las partidas con código todavía no están configuradas en esta página: falta pegar la configuración de Firebase en el archivo. Mientras, puedes usar el modo Practicar.";
+  }
+  if(S.canWrite===false)return"Puedes ver esta página, pero tu cuenta no puede guardar datos en ella. Pide a quien la compartió acceso de Colaborador. Mientras, puedes usar el modo Practicar.";
+  return"";
+}
 function dbReady(){
-  const ok=!!S.db&&S.canWrite!==false;
-  $("goHost").disabled=!ok;$("goJoin").disabled=!ok;
-  $("dbNote").classList.toggle("hidden",ok);
-  if(S.db&&S.canWrite===false)$("dbNote").textContent="Puedes ver esta página, pero no guardar datos en ella. Pide a quien la compartió acceso de Colaborador para crear o unirte a partidas. Mientras, puedes usar el modo Practicar.";
+  const m=dbMsg();
+  $("dbNote").classList.toggle("hidden",!m);$("dbNote").classList.toggle("bad",!!m&&S.ready);$("dbNote").textContent=m;
   renderResume();
 }
-$("goHost").disabled=true;$("goJoin").disabled=true;
+function needDb(){const m=dbMsg();if(!m)return true;$("dbNote").textContent=m;$("dbNote").classList.remove("hidden");$("dbNote").classList.add("bad");$("dbNote").scrollIntoView({block:"center"});return false}
 
 function renderResume(){
   const r=store.get(),box=$("resumeBox");
@@ -453,7 +493,7 @@ function renderGames(){
   $("gameList").innerHTML=Object.entries(GAMES).map(([k,g])=>`<button class="game" data-g="${k}" aria-pressed="${S.picked===k}"><span class="em">${g.em}</span><strong>${g.name}</strong><small>${g.desc}</small></button>`).join("");
   $("gameList").querySelectorAll(".game").forEach(b=>b.onclick=()=>{S.picked=b.dataset.g;renderGames();$("pickGo").disabled=false});
 }
-$("goHost").onclick=()=>{S.pickMode="host";S.picked=null;$("pickTitle").textContent="Elige el juego para la clase";$("pickGo").textContent="Crear partida";$("pickGo").disabled=true;$("pickErr").classList.add("hidden");renderGames();show("vPick")};
+$("goHost").onclick=()=>{if(!needDb())return;S.pickMode="host";S.picked=null;$("pickTitle").textContent="Elige el juego para la clase";$("pickGo").textContent="Crear partida";$("pickGo").disabled=true;$("pickErr").classList.add("hidden");renderGames();show("vPick")};
 $("goPractice").onclick=()=>{S.pickMode="practice";S.picked=null;$("pickTitle").textContent="Elige el juego para practicar";$("pickGo").textContent="Empezar";$("pickGo").disabled=true;$("pickErr").classList.add("hidden");renderGames();show("vPick")};
 $("pickGo").onclick=async()=>{
   if(!S.picked)return;
@@ -467,7 +507,7 @@ $("pickGo").onclick=async()=>{
     store.set({role:"host",code});openHost(code);
   }catch(e){
     $("pickErr").classList.remove("hidden");
-    $("pickErr").textContent=e&&e.code==="quota_exceeded"?"Se llenó el espacio de partidas de esta página. Pide a Claude que borre partidas viejas.":e&&e.code==="invalid_argument"?"No tienes permiso para crear partidas en esta página. Pide acceso de Colaborador.":"No se pudo crear la partida. Intenta de nuevo.";
+    $("pickErr").textContent=e&&(e.code==="quota_exceeded"||e.code==="resource-exhausted")?"Se llenó el espacio de partidas de esta página. Borra partidas viejas desde la consola de Firebase o de Claude.":e&&(e.code==="invalid_argument"||e.code==="permission-denied")?"No hay permiso para crear partidas. Revisa las reglas de Firestore o tu acceso de Colaborador.":"No se pudo crear la partida. Intenta de nuevo.";
     $("pickGo").disabled=false;
   }
 };
@@ -509,7 +549,7 @@ function renderRank(tbl,teams,opt={}){
 
 /* --- unirse --- */
 function memberRow(v=""){const d=document.createElement("div");d.className="member";d.innerHTML=`<input type="text" maxlength="40" placeholder="Nombre y apellido" value="${esc(v)}"><button aria-label="Quitar integrante">×</button>`;d.querySelector("button").onclick=()=>{if($("members").children.length>1)d.remove()};return d}
-$("goJoin").onclick=()=>{$("members").innerHTML="";for(let i=0;i<3;i++)$("members").appendChild(memberRow());$("joinErr").classList.add("hidden");$("joinGo").disabled=false;show("vJoin");$("jCode").focus()};
+$("goJoin").onclick=()=>{if(!needDb())return;$("members").innerHTML="";for(let i=0;i<3;i++)$("members").appendChild(memberRow());$("joinErr").classList.add("hidden");$("joinGo").disabled=false;show("vJoin");$("jCode").focus()};
 $("addMember").onclick=()=>{if($("members").children.length<8)$("members").appendChild(memberRow())};
 $("joinGo").onclick=async()=>{
   const code=$("jCode").value.trim().toUpperCase(),name=$("jTeam").value.trim();
@@ -525,7 +565,7 @@ $("joinGo").onclick=async()=>{
     if(g.data().status==="ended"){$("joinGo").disabled=false;return err("Esa partida ya terminó.")}
     const ref=await S.db.collection("games/"+code+"/teams").add({name,members,score:0,correct:0,wrong:0,idx:0,done:false,timeMs:0,joinedAt:Date.now()});
     const r={role:"team",code,teamId:ref.id,teamName:name};store.set(r);enterTeam(r);
-  }catch(e){$("joinGo").disabled=false;err(e&&e.code==="invalid_argument"?"No tienes permiso para unirte en esta página. Pide acceso de Colaborador a tu profesora.":"No se pudo entrar. Intenta de nuevo.")}
+  }catch(e){$("joinGo").disabled=false;err(e&&(e.code==="invalid_argument"||e.code==="permission-denied")?"No hay permiso para unirse a la partida. Avisa a tu profesora.":"No se pudo entrar. Intenta de nuevo.")}
 };
 async function rejoinTeam(r){
   try{const t=await S.db.doc(`games/${r.code}/teams/${r.teamId}`).get();if(!t.exists){store.clear();renderResume();return}enterTeam(r,t.data())}catch(e){}
